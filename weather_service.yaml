@@ -1,0 +1,14 @@
+serviceName: weather
+serviceAddress: http://localhost:9001
+description: "A service to get the weather for a city."
+endpoints:
+  - path: /weather/{city}
+    method: GET
+    description: "Get the current weather for a specific city."
+    operationId: getWeatherForCity
+    parameters:
+      - name: city
+        in: path
+        required: true
+        schema:
+          type: string
