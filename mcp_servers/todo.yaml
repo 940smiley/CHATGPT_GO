@@ -1,16 +1,17 @@
 serviceName: todo
 serviceAddress: http://localhost:9002
-description: "A simple service to manage a TODO list."
+description: "A simple TODO list service."
 endpoints:
   - path: /todos
     method: GET
-    description: "Get the list of all TODO items."
+    description: "Get the list of TODO items."
     operationId: getTodos
   - path: /todos
     method: POST
     description: "Add a new TODO item."
     operationId: addTodo
     requestBody:
+      description: "The task to add to the TODO list."
       required: true
       content:
         application/json:
@@ -19,3 +20,6 @@ endpoints:
             properties:
               task:
                 type: string
+                description: "Description of the TODO item."
+            required:
+              - task
