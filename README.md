@@ -1,64 +1,131 @@
 # CHATGPT_GO
 
-A Go-based API Gateway that automatically discovers local microservices (MCP Servers) and exposes them to a custom ChatGPT GPT via a single, dynamic OpenAPI schema.
+A Go-based gateway that discovers locally installed MCP (Model Context Protocol) servers and exposes them to a single custom ChatGPT GPT through an automatically generated OpenAPI schema. Drop a YAML file describing a local service into the `mcp_servers` directory and the gateway will immediately proxy requests to it and update the schema imported by your GPT.
 
-## How it Works
+## Features
 
-1.  The application runs as a local server, acting as a proxy.
-2.  It watches the `/mcp_servers` directory for new service configuration files.
-3.  When a new service is detected, the gateway dynamically generates an `openapi.json` schema that includes the new service's endpoints.
-4.  This gateway is exposed to the internet using a tunneling tool like `ngrok`.
-5.  A single custom GPT is configured to use the gateway's `openapi.json` from the public `ngrok` URL.
-6.  When an action is invoked in ChatGPT, the request hits the gateway, which then proxies it to the appropriate local MCP server.
-
-This allows developers to add and remove local services that are accessible to ChatGPT without ever needing to reconfigure the GPT itself.
+- ⚙️ **Automatic discovery** – watches a directory for new/updated YAML service definitions.
+- 📄 **Dynamic OpenAPI generation** – serves a consolidated `openapi.json` that always reflects the active MCP servers.
+- 🔁 **Reverse proxy** – forwards action requests from ChatGPT to the correct local service, preserving headers and query parameters.
+- 🏷️ **Service metadata** – annotates each operation with vendor extensions (`x-service-name`, `x-service-address`) so you can trace requests back to their source.
+- 🛡️ **CORS friendly** – responds to `OPTIONS` requests and allows cross-origin calls, making tunnelling tools like ngrok painless.
 
 ## Getting Started
 
-### 1. Install Dependencies
+### Prerequisites
 
-Run the following command in the project root to download the necessary Go modules.
-```sh
+- Go 1.21+
+- (Optional) [ngrok](https://ngrok.com/) or another tunnelling utility to expose the gateway to the internet.
+
+### 1. Fetch dependencies
+
+```bash
 go mod tidy
 ```
 
-### 2. Run the Example Services
+### 2. Start the example MCP servers (optional but recommended)
 
-Open two separate terminal windows to run the mock "MCP Servers".
+These mock services live under `examples/` and mirror the sample YAML definitions.
 
-**Terminal 1 (Weather Service):**
-```sh
-go run ./examples/weather_service/main.go
+```bash
+# Terminal 1 – Weather service
+cd examples/weather_service
+go run .
 ```
 
-**Terminal 2 (Todo Service):**
-```sh
-go run ./examples/todo_service/main.go
+```bash
+# Terminal 2 – Todo service
+cd examples/todo_service
+go run .
 ```
 
-### 3. Run the Gateway
+Both services listen on `localhost` ports (`9001` and `9002`). Feel free to swap in your own MCP servers using the same addresses.
 
-In a third terminal, run the main gateway application.
-```sh
-go run main.go
+### 3. Run the gateway
+
+```bash
+go run .
 ```
 
-### 4. Expose to the Internet
+By default the gateway listens on `:8080` and watches the `./mcp_servers` directory. The first run ships with two sample YAML files:
 
-The gateway runs on `localhost:8080`. To make it accessible to ChatGPT, you need to expose it using a tunneling service like `ngrok`.
+- `mcp_servers/weather.yaml`
+- `mcp_servers/todo.yaml`
 
-**Terminal 4 (ngrok):**
-```sh
+Add, edit, or remove YAML files in that directory and the gateway will reload automatically—no restart required.
+
+### 4. (Optional) Expose the gateway to ChatGPT
+
+Use a tunnelling service to make the local server reachable from ChatGPT. For example with ngrok:
+
+```bash
 ngrok http 8080
 ```
-`ngrok` will give you a public URL (e.g., `https://<random-id>.ngrok-free.app`).
 
-### 5. Configure ChatGPT
+Take note of the public URL (e.g. `https://<random-id>.ngrok-free.app`).
 
-1.  Create a new GPT in ChatGPT.
-2.  Go to **Configure -> Actions -> Create new action**.
-3.  Select **Import from URL**.
-4.  Paste the URL to your gateway's OpenAPI schema: `https://<random-id>.ngrok-free.app/openapi.json`.
-5.  Follow the prompts to import the actions.
+### 5. Configure your custom GPT
 
-You can now chat with your GPT and invoke actions like "What is the weather in London?" or "What's on my todo list?". If you add a new `.yaml` file to the `mcp_servers` directory, the gateway will automatically pick it up!
+1. Create or edit a GPT at [chat.openai.com](https://chat.openai.com/).
+2. Open **Configure → Actions** and choose **Import from URL**.
+3. Paste the gateway schema URL: `https://<ngrok-id>.ngrok-free.app/openapi.json`.
+4. Save the GPT. Actions are now routed to whatever MCP servers are described in `mcp_servers/`.
+
+## Defining Services
+
+Service definitions are plain YAML. Each file represents one MCP server and can contain multiple endpoints. Example (`mcp_servers/weather.yaml`):
+
+```yaml
+serviceName: weather
+serviceAddress: http://localhost:9001
+description: "A service that returns the current weather for a city."
+endpoints:
+  - path: /weather/{city}
+    method: GET
+    description: "Get the current weather for a specific city."
+    operationId: getWeatherForCity
+    parameters:
+      - name: city
+        in: path
+        description: "City to look up."
+        schema:
+          type: string
+```
+
+Endpoints support:
+
+- Path, method, description, and optional `operationId`.
+- Path and query parameters (path parameters are auto-marked as required).
+- Optional request bodies with arbitrary JSON schema snippets.
+
+Add as many YAML files as you need; the gateway merges them into a single OpenAPI document, tagging each operation with the originating service.
+
+## Configuration Reference
+
+| Option | Description | Default |
+| ------ | ----------- | ------- |
+| `CHATGPT_GATEWAY_CONFIG` | Directory to watch for YAML files. | `./mcp_servers` |
+| `CHATGPT_GATEWAY_ADDR` | Exact address (`host:port`) for the HTTP server. | *(unset)* |
+| `CHATGPT_GATEWAY_PORT` | Port (or `host:port`) if `CHATGPT_GATEWAY_ADDR` is unset. | `8080` |
+| `--config` | CLI flag alternative to `CHATGPT_GATEWAY_CONFIG`. | `./mcp_servers` |
+| `--addr` | CLI flag alternative to `CHATGPT_GATEWAY_ADDR`. | `:8080` |
+
+CLI flags override environment variables.
+
+## How the Gateway Works
+
+1. Service YAML files are parsed into in-memory definitions.
+2. The gateway builds a route table (method + path → service).
+3. On every HTTP request (except `/openapi.json`), it finds the matching route and proxies the call to the service's `serviceAddress`.
+4. The `/openapi.json` endpoint returns a merged OpenAPI 3.1 schema that ChatGPT uses for action discovery.
+
+Any file creation, modification, removal, or rename inside the config directory triggers a reload and schema regeneration.
+
+## Development Tips
+
+- Enable verbose logging by running the gateway directly (`go run .`)—you'll see proxy activity and file watcher events.
+- Want to model a new MCP server? Copy one of the sample YAML files and adjust the metadata, endpoints, and address.
+- You can inspect the generated OpenAPI document locally at [http://localhost:8080/openapi.json](http://localhost:8080/openapi.json).
+- The helper services under `examples/` are intentionally simple and stateless, making them easy to adapt or replace.
+
+Happy hacking! Drop your services in `mcp_servers/` and they instantly become available to your GPT under Developer Mode.
